@@ -43,19 +43,19 @@ pkey <command> [arguments]
 
 fetch	—	Download a remote file using pkgkey internal fetcher	pkey fetch https://example.com/file.tar.gz
 
-install	-i	Install a prebuilt binary, script, or standalone archive	pkey -i neofetch https://.../neofetch
+install  	-i	Install a prebuilt binary, script, or standalone archive	pkey -i neofetch https://.../neofetch
 
 compile-install	-ci	Download, compile from source, and install automatically	pkey -ci cpufetch https://.../v1.04.tar.gz
 
-update	-u	Re-fetch and update installed package(s)	pkey -u cpufetch
+update	        -u	Re-fetch and update installed package(s)	pkey -u cpufetch
 
-remove	-R	Safely uninstall package & clean tracking registry	pkey -R cpufetch
+remove	        -R	Safely uninstall package & clean tracking registry	pkey -R cpufetch
 
-list	-l	List all installed packages in the system database	pkey -l
+list	        -l	List all installed packages in the system database	pkey -l
 
-version	-v	Show version information	pkey -v
+version	        -v	Show version information	pkey -v
 
-help	-h	Display full help and usage instructions	pkey -h
+help	        -h	Display full help and usage instructions	pkey -h
 
 
 ## How It Works
@@ -68,7 +68,7 @@ When you install a tool using pkey, it creates two registry tracking points:
     ~/.local/share/pkgkey/<name>.url: (Optional) The original source location for seamless pkey -u updates.
 ## Custom Micro-Recipes (.pkgkey)
  For packages requiring special build steps, you can pass a .pkgkey script to pkey -ci:
-             # Example: custom_tool.pkgkey
+# Example: custom_tool.pkgkey
 
 NAME="custom_tool"
 
