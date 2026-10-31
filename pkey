@@ -1,0 +1,355 @@
+#!/bin/sh
+# ==============================================================================
+# Project Name : pkgkey (CLI: pkey)
+# Description  : A minimalist, POSIX-compliant, user-level (~/.local) package 
+#                manager inspired by pkgutils and CRUX, featuring built-in 
+#                fetching, micro-recipes, and staged source compilation.
+# Version      : 0.5.0
+# ==============================================================================
+
+# --- Environment & Directory Configuration ---
+VERSION="0.5.0"
+PREFIX="${HOME}/.local"
+CONFIG_DIR="${PREFIX}/share/pkgkey"
+DB_DIR="${CONFIG_DIR}/packages"
+
+# Ensure core user-level directory structure exists
+mkdir -p "${PREFIX}/bin" "$CONFIG_DIR" "$DB_DIR"
+
+# ==============================================================================
+# Helper: Usage / Help Screen
+# ==============================================================================
+usage() {
+    cat << EOF
+pkgkey (CLI: pkey) v${VERSION}
+Usage: pkey <command> [arguments]
+
+Commands:
+  fetch <url> [output]                 Download a file using pkgkey's built-in fetcher
+  -i, install <name> <url_or_path>     Install prebuilt binary, script, or package
+  -ci, compile-install <name|recipe>   Compile from source (Auto-detect or .pkgkey recipe)
+  -u, update [name]                    Update installed package(s)
+  -R, remove <name>                    Remove package and clean tracking database
+  -l, list                             List all installed packages
+  -v, --version                        Show version information
+  -h, --help                           Show this help message
+
+Examples:
+  pkey fetch https://example.com/file.tar.gz
+  pkey -i neofetch https://raw.githubusercontent.com/.../neofetch
+  pkey -ci cpufetch https://github.com/.../archive/v1.04.tar.gz
+EOF
+    exit 1
+}
+
+# ==============================================================================
+# Core Module: Built-in Fetcher (Alternative to external curl/wget dependency)
+# ==============================================================================
+pkgkey_fetch() {
+    url="$1"
+    output="$2"
+    
+    [ -z "$url" ] && { echo "Error: URL is required for fetching." >&2; return 1; }
+
+    # Fallback to URL basename if output path is not explicitly provided
+    if [ -z "$output" ]; then
+        output=$(basename "$url")
+        [ -z "$output" ] && output="downloaded_file"
+    fi
+
+    # Try available network clients in order of preference
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$output"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$output" "$url"
+    elif command -v busybox >/dev/null 2>&1; then
+        busybox wget -qO "$output" "$url"
+    else
+        echo "Error: No suitable download utility (curl, wget, busybox) found." >&2
+        return 1
+    fi
+}
+
+# ==============================================================================
+# Module: Prebuilt Binary / Package Installation (-i)
+# ==============================================================================
+pkgkey_install() {
+    name="$1"
+    source="$2"
+    [ -z "$name" ] || [ -z "$source" ] && usage
+
+    pkg_db="${DB_DIR}/${name}.files"
+    url_file="${CONFIG_DIR}/${name}.url"
+
+    # Prevent duplicate installations
+    if [ -f "$pkg_db" ]; then
+        echo "Error: Package '$name' is already installed." >&2
+        exit 1
+    fi
+
+    tmp_dir=$(mktemp -d)
+    tmp_file="${tmp_dir}/pkg_source"
+
+    # Obtain package source (local file or remote URL)
+    if [ -f "$source" ]; then
+        cp "$source" "$tmp_file"
+    else
+        echo "==> Fetching package source for '$name'..."
+        pkgkey_fetch "$source" "$tmp_file" || { rm -rf "$tmp_dir"; exit 1; }
+        echo "$source" > "$url_file"
+    fi
+
+    printf "Install prebuilt package '%s'? [y/N]: " "$name"
+    read -r reply
+    case "$reply" in [yY]*) ;; *) echo "Installation aborted."; rm -rf "$tmp_dir"; exit 0 ;; esac
+
+    echo "==> Installing '$name'..."
+    if tar -tzf "$tmp_file" >/dev/null 2>&1; then
+        # Archive installation: track files and extract to PREFIX
+        tar -tzf "$tmp_file" | sed "s|^|${PREFIX}/|" > "$pkg_db"
+        tar -xzf "$tmp_file" -C "$PREFIX"
+    else
+        # Single binary / script installation
+        dest_bin="${PREFIX}/bin/${name}"
+        cp "$tmp_file" "$dest_bin"
+        chmod +x "$dest_bin"
+        echo "$dest_bin" > "$pkg_db"
+    fi
+
+    rm -rf "$tmp_dir"
+    echo "==> Successfully installed '$name'!"
+}
+
+# ==============================================================================
+# Module: Source Compilation & Micro-Recipe Installation (-ci)
+# ==============================================================================
+pkgkey_compile_install() {
+    arg1="$1"
+    arg2="$2"
+    [ -z "$arg1" ] && usage
+
+    recipe_file=""
+    name=""
+    url=""
+
+    # Check if a custom micro-recipe file (.pkgkey or .akey) is provided
+    if [ -f "$arg1" ]; then
+        recipe_file="$arg1"
+        . "$recipe_file"
+        [ -z "$NAME" ] || [ -z "$URL" ] && { echo "Error: Invalid micro-recipe format (NAME or URL missing)." >&2; exit 1; }
+        name="$NAME"
+        url="$URL"
+    else
+        name="$arg1"
+        url="$arg2"
+        [ -z "$url" ] && usage
+    fi
+
+    pkg_db="${DB_DIR}/${name}.files"
+    url_file="${CONFIG_DIR}/${name}.url"
+
+    if [ -f "$pkg_db" ]; then
+        echo "Error: Package '$name' is already installed." >&2
+        exit 1
+    fi
+
+    echo "$url" > "$url_file"
+
+    tmp_dir=$(mktemp -d)
+    src_archive="${tmp_dir}/source.tar.gz"
+
+    echo "==> Downloading source archive for '$name'..."
+    pkgkey_fetch "$url" "$src_archive" || { rm -rf "$tmp_dir"; exit 1; }
+
+    extract_dir="${tmp_dir}/src"
+    mkdir -p "$extract_dir"
+
+    # Extract source archive intelligently (supports tar.gz, tar.xz, or single C files)
+    if tar -tzf "$src_archive" >/dev/null 2>&1; then
+        tar -xzf "$src_archive" -C "$extract_dir" --strip-components=1 2>/dev/null || tar -xzf "$src_archive" -C "$extract_dir"
+    elif tar -tJf "$src_archive" >/dev/null 2>&1; then
+        tar -xJf "$src_archive" -C "$extract_dir" --strip-components=1 2>/dev/null || tar -xJf "$src_archive" -C "$extract_dir"
+    else
+        cp "$src_archive" "${extract_dir}/${name}.c"
+    fi
+
+    cd "$extract_dir" || { rm -rf "$tmp_dir"; exit 1; }
+
+    printf "Compile and install source for '%s'? [y/N]: " "$name"
+    read -r reply
+    case "$reply" in [yY]*) ;; *) echo "Compilation aborted."; rm -rf "$tmp_dir"; exit 0 ;; esac
+
+    stage_dir="${tmp_dir}/stage"
+    mkdir -p "$stage_dir"
+
+    # Build Phase: Custom Recipe or Heuristic Auto-Detection
+    if [ -n "$recipe_file" ] && type build >/dev/null 2>&1; then
+        echo "==> Executing custom micro-recipe build instructions..."
+        build "$stage_dir"
+    else
+        if [ -f "./configure" ]; then
+            echo "==> Autotools build system detected..."
+            ./configure --prefix="${PREFIX}"
+            make -j"$(nproc 2>/dev/null || echo 2)"
+            make install DESTDIR="$stage_dir"
+        elif [ -f "CMakeLists.txt" ]; then
+            echo "==> CMake build system detected..."
+            mkdir -p build && cd build
+            cmake -DCMAKE_INSTALL_PREFIX="${PREFIX}" ..
+            make -j"$(nproc 2>/dev/null || echo 2)"
+            make install DESTDIR="$stage_dir"
+            cd ..
+        elif [ -f "Makefile" ] || [ -f "makefile" ]; then
+            echo "==> Makefile build system detected..."
+            make -j"$(nproc 2>/dev/null || echo 2)"
+            make install PREFIX="${PREFIX}" DESTDIR="$stage_dir" || make install PREFIX="${PREFIX}"
+        else
+            c_file=$(ls *.c 2>/dev/null | head -n 1)
+            if [ -n "$c_file" ]; then
+                echo "==> Single C source file detected ($c_file)..."
+                mkdir -p "${stage_dir}${PREFIX}/bin"
+                gcc -O2 "$c_file" -o "${stage_dir}${PREFIX}/bin/${name}"
+            else
+                echo "Error: No supported build system or recipe instructions found." >&2
+                rm -rf "$tmp_dir"
+                exit 1
+            fi
+        fi
+    fi
+
+    # Staged Installation & Registry Logging (pkgutils style)
+    if [ -d "$stage_dir" ]; then
+        cd "$stage_dir"
+        find . -type f -o -type l | sed 's|^\./||' | while read -r rel_file; do
+            target_file="${PREFIX}/${rel_file}"
+            mkdir -p "$(dirname "$target_file")"
+            cp -P "./${rel_file}" "$target_file"
+            echo "$target_file" >> "$pkg_db"
+        done
+    fi
+
+    cd ~
+    rm -rf "$tmp_dir"
+    echo "==> Successfully compiled and installed '$name'!"
+}
+
+# ==============================================================================
+# Module: Package Update Mechanism (-u)
+# ==============================================================================
+pkgkey_update() {
+    target_name="$1"
+    found=0
+
+    for db in "${DB_DIR}"/*.files; do
+        [ -f "$db" ] || continue
+        name=$(basename "$db" .files)
+
+        if [ -n "$target_name" ] && [ "$name" != "$target_name" ]; then
+            continue
+        fi
+
+        found=1
+        url_file="${CONFIG_DIR}/${name}.url"
+        if [ ! -f "$url_file" ]; then
+            echo "Warning: No source URL tracked for '$name'. Skipping update."
+            continue
+        fi
+
+        url=$(cat "$url_file")
+        echo "==> Updating package '$name' from $url..."
+
+        # Atomically remove old files before updating
+        while IFS= read -r file; do
+            [ -f "$file" ] || [ -L "$file" ] && rm -f "$file"
+        done < "$db"
+        rm -f "$db"
+
+        # Re-fetch and re-install
+        tmp_dir=$(mktemp -d)
+        tmp_file="${tmp_dir}/pkg_source"
+
+        pkgkey_fetch "$url" "$tmp_file" || { rm -rf "$tmp_dir"; continue; }
+
+        if tar -tzf "$tmp_file" >/dev/null 2>&1; then
+            tar -tzf "$tmp_file" | sed "s|^|${PREFIX}/|" > "$db"
+            tar -xzf "$tmp_file" -C "$PREFIX"
+        else
+            dest_bin="${PREFIX}/bin/${name}"
+            cp "$tmp_file" "$dest_bin"
+            chmod +x "$dest_bin"
+            echo "$dest_bin" > "$db"
+        fi
+
+        rm -rf "$tmp_dir"
+        echo "==> Successfully updated '$name'!"
+    done
+
+    if [ -n "$target_name" ] && [ "$found" -eq 0 ]; then
+        echo "Error: Package '$target_name' not found in database." >&2
+        exit 1
+    fi
+}
+
+# ==============================================================================
+# Module: Package Uninstallation / Removal (-R)
+# ==============================================================================
+pkgkey_remove() {
+    name="$1"
+    [ -z "$name" ] && usage
+
+    pkg_db="${DB_DIR}/${name}.files"
+    url_file="${CONFIG_DIR}/${name}.url"
+
+    if [ ! -f "$pkg_db" ]; then
+        echo "Error: Package '$name' is not installed." >&2
+        exit 1
+    fi
+
+    printf "Remove package '%s' and all associated files? [y/N]: " "$name"
+    read -r reply
+    case "$reply" in [yY]*) ;; *) echo "Removal cancelled."; exit 0 ;; esac
+
+    # Safely remove all tracked files based on the registry
+    while IFS= read -r file; do
+        if [ -f "$file" ] || [ -L "$file" ]; then
+            rm -f "$file"
+            echo "Removed: $file"
+        fi
+    done < "$pkg_db"
+
+    rm -f "$pkg_db" "$url_file"
+    echo "==> Successfully removed '$name'."
+}
+
+# ==============================================================================
+# Module: Package Listing (-l)
+# ==============================================================================
+pkgkey_list() {
+    echo "Installed packages (pkgkey):"
+    for db in "${DB_DIR}"/*.files; do
+        [ -f "$db" ] || continue
+        basename "$db" .files
+    done
+}
+
+# ==============================================================================
+# Main Command Router (CLI Entry Point)
+# ==============================================================================
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+cmd="$1"
+shift || true
+
+case "$cmd" in
+    fetch)               pkgkey_fetch "$1" "$2" ;;
+    -i|install)          pkgkey_install "$1" "$2" ;;
+    -ci|compile-install) pkgkey_compile_install "$1" "$2" ;;
+    -u|update)           pkgkey_update "$1" ;;
+    -R|remove)           pkgkey_remove "$1" ;;
+    -l|list)             pkgkey_list ;;
+    -v|--version)        echo "pkgkey (pkey) v${VERSION}" ;;
+    -h|--help)           usage ;;
+    *)                   usage ;;
+esac
