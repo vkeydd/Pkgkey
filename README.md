@@ -26,12 +26,12 @@ You can bootstrap `pkgkey` directly to your `~/.local/bin` using either `curl` o
 
 ### Via `curl`
 ```sh
-curl -fsSL https://githubusercontent.com | sh
+curl -fsSL https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh | sh
 ```
 
 ### Via `wget`
 ```sh
-wget -qO- https://githubusercontent.com | sh
+wget -qO- https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh | sh
 ```
 
 > **Note:** The installer automatically checks and appends `~/.local/bin` to your PATH inside `~/.profile` if it is not already present.
