@@ -1,8 +1,8 @@
 # pkgkey (CLI: `pkey`)
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://github.com/vkeydd/Pkgkey)
-[![License: ISC](https://img.shields.io/badge/License-ISC-brightgreen.svg)](LICENSE)
-[![POSIX Compliant](https://img.shields.io/badge/POSIX-compliant-orange.svg)]()
+[![Version](https://shields.io)](https://github.com)
+[![License: ISC](https://shields.io)](LICENSE)
+[![POSIX Compliant](https://shields.io)]()
 
 > A minimalist, rootless, user-level (`~/.local`) package manager for Linux systems, inspired by `pkgutils` and CRUX.
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Key Features
+## 🚀 Key Features
 
 * **Rootless Operation:** Installs binaries, scripts, and libraries strictly under `~/.local` (no root access required).
 * **Built-in Fetcher:** Uses an internal download utility (`pkgkey_fetch`) that seamlessly cascades through `curl`, `wget`, and `busybox wget` to remove external hard dependencies.
@@ -20,79 +20,74 @@
 
 ---
 
-## One-Line Installation
+## 📦 One-Line Installation
 
 You can bootstrap `pkgkey` directly to your `~/.local/bin` using either `curl` or `wget`:
 
 ### Via `curl`
 ```sh
-curl -fsSL [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh) | sh
+curl -fsSL https://githubusercontent.com | sh
+```
 
+### Via `wget`
+```sh
+wget -qO- https://githubusercontent.com | sh
+```
 
-### Via 'wget'
-wget -qO- [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh) | sh
+> **Note:** The installer automatically checks and appends `~/.local/bin` to your PATH inside `~/.profile` if it is not already present.
 
+---
 
+## 🛠️ Command Reference
 
-Note: The installer automatically checks and appends ~/.local/bin to your PATH inside ~/.profile if it is not already present.
+| Command | Short | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `fetch` | — | Download a remote file using pkgkey internal fetcher | `pkey fetch https://example.com` |
+| `install` | `-i` | Install a prebuilt binary, script, or standalone archive | `pkey -i neofetch https://.../neofetch` |
+| `compile-install` | `-ci` | Download, compile from source, and install automatically | `pkey -ci cpufetch https://.../v1.04.tar.gz` |
+| `update` | `-u` | Re-fetch and update installed package(s) | `pkey -u cpufetch` |
+| `remove` | `-R` | Safely uninstall package & clean tracking registry | `pkey -R cpufetch` |
+| `list` | `-l` | List all installed packages in the system database | `pkey -l` |
+| `version` | `-v` | Show version information | `pkey -v` |
+| `help` | `-h` | Display full help and usage instructions | `pkey -h` |
 
-# Command Reference
+---
 
-pkey <command> [arguments]
-### Command	Short	Description	Example
+## 🔍 How It Works
 
-fetch	—	Download a remote file using pkgkey internal fetcher	pkey fetch https://example.com/file.tar.gz
+### Package Registry Model
 
-install  	-i	Install a prebuilt binary, script, or standalone archive	pkey -i neofetch https://.../neofetch
+When you install a tool using `pkey`, it creates two registry tracking points:
+1. `~/.local/share/pkgkey/packages/<name>.files`: A plain-text list of every installed file path.
+2. `~/.local/share/pkgkey/<name>.url`: *(Optional)* The original source location for seamless `pkey -u` updates.
 
-compile-install	-ci	Download, compile from source, and install automatically	pkey -ci cpufetch https://.../v1.04.tar.gz
+---
 
-update	        -u	Re-fetch and update installed package(s)	pkey -u cpufetch
+## 📜 Custom Micro-Recipes (`.pkgkey`)
 
-remove	        -R	Safely uninstall package & clean tracking registry	pkey -R cpufetch
+For packages requiring special build steps, you can pass a `.pkgkey` script to `pkey -ci`:
 
-list	        -l	List all installed packages in the system database	pkey -l
-
-version	        -v	Show version information	pkey -v
-
-help	        -h	Display full help and usage instructions	pkey -h
-
-
-## How It Works
-
-# Package Registry Model
-When you install a tool using pkey, it creates two registry tracking points:
-
-    ~/.local/share/pkgkey/packages/<name>.files: A plain-text list of every installed file path.
-
-    ~/.local/share/pkgkey/<name>.url: (Optional) The original source location for seamless pkey -u updates.
-## Custom Micro-Recipes (.pkgkey)
- For packages requiring special build steps, you can pass a .pkgkey script to pkey -ci:
+```sh
 # Example: custom_tool.pkgkey
-
 NAME="custom_tool"
-
-URL="[https://example.com/src.tar.gz](https://example.com/src.tar.gz)"
-
-
+URL="https://example.com"
 
 build() {
-
     DESTDIR="$1"
-
     make DESTDIR="$DESTDIR" PREFIX="$HOME/.local" install
-
 }
+```
 
-
-# then run
+To run your custom recipe:
+```sh
 pkey -ci custom_tool.pkgkey
+```
 
+---
 
+## 📂 File System Layout
 
-# File System Layout
-
-
+```text
 ~/.local/
 ├── bin/
 │   └── pkey                              # Main CLI executable
@@ -102,3 +97,4 @@ pkey -ci custom_tool.pkgkey
         │   ├── neofetch.files
         │   └── cpufetch.files
         └── cpufetch.url                  # Tracked source URLs for updates 
+```
