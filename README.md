@@ -24,5 +24,5 @@ You can install `pkgkey` using either `curl` or `wget`. The bootstrap installer 
 ### Using `curl`:
 ```sh
 curl -fsSL [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh) | sh
-Or using Wget:
-wget -qO- [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh) | sh
+### Or using 'Wget':
+''' wget -qO- [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh) | sh
