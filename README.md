@@ -32,7 +32,7 @@ curl -fsSL [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](htt
 ### Via 'wget'
 wget -qO- [https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh](https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh) | sh
 
-
+---
 
 Note: The installer automatically checks and appends ~/.local/bin to your PATH inside ~/.profile if it is not already present.
 
