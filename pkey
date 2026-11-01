@@ -5,7 +5,7 @@
 #                manager inspired by pkgutils and CRUX, featuring built-in 
 #                fetching, micro-recipes, staged source compilation, and 
 #                universal dependency/health checks.
-# Version      : 0.5.9
+# Version      : 0.6
 # ==============================================================================
 
 # --- Environment & Directory Configuration ---
@@ -29,6 +29,7 @@ Commands:
   fetch <url> [output]                 Download a file using pkgkey's built-in fetcher
   -i, install <name> <url_or_path>     Install prebuilt binary, script, or package
   -ci, compile-install <name|recipe>   Compile from source (Auto-detect or .pkgkey recipe)
+  make                                 Build and install from current directory (shortcut)
   -u, update [name]                    Update installed package(s)
   -R, remove <name>                    Remove package and clean tracking database
   -l, list                             List all installed packages
@@ -217,9 +218,16 @@ pkgkey_compile_install() {
                         [ -f "$bin" ] && [ -x "$bin" ] && [ "$bin" != "Makefile" ] && [ "$bin" != "makefile" ] && cp "$bin" "${stage_dir}/bin/"
                     done
                 fi
-            else
+           else
                 c_file=$(ls *.c 2>/dev/null | head -n 1)
-                [ -n "$c_file" ] && { mkdir -p "${stage_dir}/bin"; gcc -O2 "$c_file" -o "${stage_dir}/bin/${name}"; } || { rm -rf "$stage_dir"; exit 1; }
+                if [ -n "$c_file" ]; then
+                    mkdir -p "${stage_dir}/bin"
+                    gcc -O2 "$c_file" -o "${stage_dir}/bin/${name}" || { rm -rf "$stage_dir"; exit 1; }
+                else
+                    echo "Error: No supported build system found (configure, CMakeLists.txt, Makefile) and no root .c files found." >&2
+                    rm -rf "$stage_dir"
+                    exit 1
+                fi
             fi
         fi
         [ -n "$recipe_file" ] && cp "$recipe_file" "${CONFIG_DIR}/${name}.pkgkey" 2>/dev/null
@@ -395,7 +403,7 @@ pkgkey_remove() {
 
 # ==============================================================================
 # Module: Package Listing (-l)
-# =================================================これを
+# ==============================================================================
 pkgkey_list() {
     echo "Installed packages (pkgkey):"
     for db in "${DB_DIR}"/*.files; do
@@ -414,6 +422,7 @@ case "$cmd" in
     fetch)               pkgkey_fetch "$1" "$2" ;;
     -i|install)          pkgkey_install "$1" "$2" ;;
     -ci|compile-install) pkgkey_compile_install "$1" "$2" ;;
+    make)                pkgkey_compile_install "" "" ;;
     -u|update)           pkgkey_update "$1" ;;
     -R|remove)           pkgkey_remove "$1" ;;
     -l|list)             pkgkey_list ;;
