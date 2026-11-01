@@ -29,12 +29,12 @@ You can bootstrap the `PkgKey` interactively using either `curl` or `wget`:
 
 ### Via `curl`
 ```sh
-curl -fsSL https://github.com/vkeydd/Pkgkey/blob/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh | sh | sh
 ```
 
 ### Via `wget`
 ```sh
-wget -qO- https://github.com/vkeydd/Pkgkey/blob/main/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh | sh
 ```
 
 ---
