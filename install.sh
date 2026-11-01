@@ -58,5 +58,5 @@ case ":$PATH:" in
         ;;
 esac
 
-echo "==> pkgkey (pkey) v0.5.0 installed successfully!"
+echo "==> pkgkey  v0.6 installed successfully!"
 echo "==> Run 'source ~/.profile' (or restart your shell), then type 'pkey -h' to get started."
