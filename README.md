@@ -29,7 +29,7 @@ You can bootstrap the `PkgKey` interactively using either `curl` or `wget`:
 
 ### Via `curl`
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh | sh | sh
+curl -fsSL https://raw.githubusercontent.com/vkeydd/Pkgkey/main/install.sh | sh 
 ```
 
 ### Via `wget`
