@@ -1,0 +1,436 @@
+#!/bin/sh
+# ==============================================================================
+# Project Name : rkey (System-level package manager)
+# Description  : A minimalist, POSIX-compliant, system-level (/rkey) package 
+#                manager inspired by pkgutils and CRUX, featuring built-in 
+#                fetching, micro-recipes, staged source compilation, and 
+#                universal dependency/health checks.
+# Version      : 0.2
+# ==============================================================================
+
+# --- Environment & Directory Configuration ---
+VERSION="0.2"
+PREFIX="/rkey"
+CONFIG_DIR="${PREFIX}/share/rkey"
+DB_DIR="${CONFIG_DIR}/packages"
+
+
+# Ensure core system-level directory structure exists
+mkdir -p "${PREFIX}/bin" "$CONFIG_DIR" "$DB_DIR" 2>/dev/null || {
+    echo "Error: Failed to create directories under ${PREFIX}. Are you root?" >&2
+    exit 1
+}
+
+# ==============================================================================
+# Helper: Usage / Help Screen
+# ==============================================================================
+usage() {
+    cat << EOF
+rkey v${VERSION}
+Usage: rkey <command> [arguments]
+
+Commands:
+  fetch <url> [output]                 Download a file using rkey's built-in fetcher
+  -i, install <name> <url_or_path>     Install prebuilt binary, script, or package
+  -ci, compile-install <name|recipe>   Compile from source (Auto-detect or .rkey recipe)
+  make                                 Build and install from current directory (shortcut)
+  -u, update [name]                    Update installed package(s)
+  -R, remove <name>                    Remove package and clean tracking database
+  -l, list                             List all installed packages
+  -v, --version                        Show version information
+  -h, --help                           Show this help message
+EOF
+    exit 1
+}
+
+# ==============================================================================
+# Core Module: Built-in Fetcher
+# ==============================================================================
+rkey_fetch() {
+    url="$1"
+    output="$2"
+    [ -z "$url" ] && { echo "Error: URL is required for fetching." >&2; return 1; }
+    [ -z "$output" ] && output=$(basename "$url") && [ -z "$output" ] && output="downloaded_file"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$output"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$output" "$url"
+    elif command -v busybox >/dev/null 2>&1; then
+        busybox wget -qO "$output" "$url"
+    else
+        echo "Error: No suitable download utility found." >&2
+        return 1
+    fi
+}
+
+# ==============================================================================
+# Core Module: Dependency & Binary Health Checker
+# ==============================================================================
+rkey_check_dependencies() {
+    reqs="$1"
+    [ -z "$reqs" ] && return 0
+
+    echo "==> Checking package dependencies: [ $reqs ]..."
+    for dep in $reqs; do
+        if [ -f "${DB_DIR}/${dep}.files" ]; then
+            continue
+        fi
+        if command -v "$dep" >/dev/null 2>&1; then
+            continue
+        fi
+        echo "Error: Missing dependency -> '$dep' is neither installed via rkey nor available in system PATH." >&2
+        return 1
+    done
+    echo "==> All dependencies satisfied."
+}
+
+rkey_check_binary_health() {
+    bin_path="$1"
+    [ ! -f "$bin_path" ] && return 0
+
+    if command -v readelf >/dev/null 2>&1; then
+        readelf -h "$bin_path" >/dev/null 2>&1 || return 0
+    elif command -v file >/dev/null 2>&1; then
+        file "$bin_path" | grep -q "ELF" || return 0
+    else
+        [ "$(od -N 4 -t x1 "$bin_path" 2>/dev/null | awk 'NR==1 {print $2 $3 $4 $5}')" = "7f454c46" ] || return 0
+    fi
+
+    if command -v ldd >/dev/null 2>&1; then
+        missing_libs=$(ldd "$bin_path" 2>/dev/null | grep "not found")
+        if [ -n "$missing_libs" ]; then
+            echo "===================================================================="
+            echo "⚠️  WARNING: Binary '$(basename "$bin_path")' has missing shared libraries!"
+            echo "$missing_libs"
+            echo "Tip: This tool may fail to execute unless you install missing libraries."
+            echo "===================================================================="
+        else
+            echo "==> Health check passed: All dynamic libraries are satisfied."
+        fi
+    fi
+}
+
+# ==============================================================================
+# Module: Prebuilt Binary / Package Installation (-i) -> Forced to /rkey/bin/
+# ==============================================================================
+rkey_install() {
+    name="$1"
+    source="$2"
+    [ -z "$name" ] || [ -z "$source" ] && usage
+
+    pkg_db="${DB_DIR}/${name}.files"
+    [ -f "$pkg_db" ] && { echo "Error: Package '$name' is already installed." >&2; exit 1; }
+
+    tmp_dir=$(mktemp -d)
+    tmp_file="${tmp_dir}/pkg_source"
+    [ -f "$source" ] && cp "$source" "$tmp_file" || { rkey_fetch "$source" "$tmp_file" || { rm -rf "$tmp_dir"; exit 1; } }
+
+    echo "==> Installing '$name' system-wide..."
+    dest_bin="${PREFIX}/bin/${name}"
+
+    if tar -tzf "$tmp_file" >/dev/null 2>&1; then
+        extract_sub="${tmp_dir}/extracted"
+        mkdir -p "$extract_sub"
+        tar -xzf "$tmp_file" -C "$extract_sub"
+        
+        found_bin=$(find "$extract_sub" -type f -executable | head -n 1)
+        [ -z "$found_bin" ] && found_bin=$(find "$extract_sub" -type f | head -n 1)
+        
+        if [ -n "$found_bin" ]; then
+            cp "$found_bin" "$dest_bin"
+            chmod +x "$dest_bin"
+            echo "$dest_bin" > "$pkg_db"
+            rkey_check_binary_health "$dest_bin"
+        else
+            echo "Error: No executable found in archive." >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+    else
+        cp "$tmp_file" "$dest_bin"
+        chmod +x "$dest_bin"
+        echo "$dest_bin" > "$pkg_db"
+        rkey_check_binary_health "$dest_bin"
+    fi
+    rm -rf "$tmp_dir"
+    echo "==> Successfully installed '$name' to ${PREFIX}!"
+}
+
+# ==============================================================================
+# Module: Source Compilation & Micro-Recipe Installation (-ci)
+# ==============================================================================
+rkey_compile_install() {
+    arg1="$1"
+    arg2="$2"
+    recipe_file=""
+    recipe_dir=""
+    name=""
+    url=""
+    local_build=0
+    REQUIRES="make gcc" # Baseline dependencies for direct CLI compiles
+
+    if [ -n "$arg1" ] && [ -f "$arg1" ] && { case "$arg1" in *.rkey|*.pkgkey) true ;; *) false ;; esac; }; then
+        recipe_file="$(realpath "$arg1" 2>/dev/null || echo "$arg1")"
+        recipe_dir="$(dirname "$recipe_file")"
+        . "$recipe_file"
+        [ -z "$NAME" ] || [ -z "$URL" ] && { echo "Error: Invalid micro-recipe format." >&2; exit 1; }
+        name="$NAME"
+        url="$URL"
+        [ "$url" = "local" ] && local_build=1
+    elif [ -n "$arg1" ] && [ -n "$arg2" ]; then
+        name="$arg1"
+        url="$arg2"
+    elif [ -n "$arg1" ]; then
+        name="$arg1"
+        local_build=1
+    else
+        name=$(basename "$PWD")
+        local_build=1
+    fi
+
+    # Run Dependency Checker
+    rkey_check_dependencies "$REQUIRES" || { echo "Error: Dependency check failed for '$name'." >&2; exit 1; }
+
+    pkg_db="${DB_DIR}/${name}.files"
+    [ -f "$pkg_db" ] && { echo "Error: Package '$name' is already installed." >&2; exit 1; }
+
+    stage_dir=$(mktemp -d)
+
+    if [ "$local_build" -eq 1 ]; then
+        [ -n "$recipe_dir" ] && [ -d "$recipe_dir" ] && cd "$recipe_dir" || exit 1
+        echo "==> Building from current directory for '$name'..."
+        if [ -n "$recipe_file" ] && type build >/dev/null 2>&1; then
+            build "$stage_dir" || { echo "Error: Recipe build failed." >&2; rm -rf "$stage_dir"; exit 1; }
+        else
+            [ ! -f "./configure" ] && [ -f "configure.ac" ] && autoreconf -ivf
+            if [ -f "./configure" ]; then
+                ./configure --prefix="${PREFIX}" || { rm -rf "$stage_dir"; exit 1; }
+                make -j"$(nproc 2>/dev/null || echo 2)" || { rm -rf "$stage_dir"; exit 1; }
+                make install DESTDIR="$stage_dir" || { rm -rf "$stage_dir"; exit 1; }
+            elif [ -f "CMakeLists.txt" ]; then
+                mkdir -p build && cd build
+                cmake -DCMAKE_INSTALL_PREFIX="${PREFIX}" .. || { cd ..; rm -rf "$stage_dir"; exit 1; }
+                make -j"$(nproc 2>/dev/null || echo 2)" || { cd ..; rm -rf "$stage_dir"; exit 1; }
+                make install DESTDIR="$stage_dir" || { cd ..; rm -rf "$stage_dir"; exit 1; }
+                cd ..
+            elif [ -f "Makefile" ] || [ -f "makefile" ]; then
+                make -j"$(nproc 2>/dev/null || echo 2)" || { rm -rf "$stage_dir"; exit 1; }
+                if ! make install PREFIX="${PREFIX}" DESTDIR="$stage_dir" 2>/dev/null && ! make install PREFIX="${PREFIX}" 2>/dev/null; then
+                    mkdir -p "${stage_dir}/bin"
+                    for bin in *; do
+                        [ -f "$bin" ] && [ -x "$bin" ] && [ "$bin" != "Makefile" ] && [ "$bin" != "makefile" ] && cp "$bin" "${stage_dir}/bin/"
+                    done
+                fi
+           else
+                c_file=$(ls *.c 2>/dev/null | head -n 1)
+                if [ -n "$c_file" ]; then
+                    mkdir -p "${stage_dir}/bin"
+                    gcc -O2 "$c_file" -o "${stage_dir}/bin/${name}" || { rm -rf "$stage_dir"; exit 1; }
+                else
+                    echo "Error: No supported build system found and no root .c files found." >&2
+                    rm -rf "$stage_dir"
+                    exit 1
+                fi
+            fi
+        fi
+        [ -n "$recipe_file" ] && cp "$recipe_file" "${CONFIG_DIR}/${name}.rkey" 2>/dev/null
+    else
+        [ -n "$recipe_file" ] && cp "$recipe_file" "${CONFIG_DIR}/${name}.rkey" 2>/dev/null
+        echo "$url" > "${CONFIG_DIR}/${name}.url"
+        tmp_dir=$(mktemp -d)
+        src_archive="${tmp_dir}/source.tar.gz"
+        rkey_fetch "$url" "$src_archive" || { rm -rf "$tmp_dir" "$stage_dir"; exit 1; }
+
+        extract_dir="${tmp_dir}/src"
+        mkdir -p "$extract_dir"
+        tar -xzf "$src_archive" -C "$extract_dir" --strip-components=1 2>/dev/null || tar -xzf "$src_archive" -C "$extract_dir" || tar -xJf "$src_archive" -C "$extract_dir"
+        cd "$extract_dir" || { rm -rf "$tmp_dir" "$stage_dir"; exit 1; }
+
+        if [ -n "$recipe_file" ] && type build >/dev/null 2>&1; then
+            build "$stage_dir" || { rm -rf "$tmp_dir" "$stage_dir"; exit 1; }
+        else
+            [ ! -f "./configure" ] && [ -f "configure.ac" ] && autoreconf -ivf
+            if [ -f "./configure" ]; then
+                ./configure --prefix="${PREFIX}" || { rm -rf "$stage_dir"; exit 1; }
+                make -j"$(nproc 2>/dev/null || echo 2)" || { rm -rf "$stage_dir"; exit 1; }
+                make install DESTDIR="$stage_dir" || { rm -rf "$stage_dir"; exit 1; }
+            elif [ -f "Makefile" ] || [ -f "makefile" ]; then
+                make -j"$(nproc 2>/dev/null || echo 2)" || { rm -rf "$stage_dir"; exit 1; }
+                if ! make install PREFIX="${PREFIX}" DESTDIR="$stage_dir" 2>/dev/null && ! make install PREFIX="${PREFIX}" 2>/dev/null; then
+                    mkdir -p "${stage_dir}/bin"
+                    for bin in *; do
+                        [ -f "$bin" ] && [ -x "$bin" ] && [ "$bin" != "Makefile" ] && [ "$bin" != "makefile" ] && cp "$bin" "${stage_dir}/bin/"
+                    done
+                fi
+            else
+                rm -rf "$tmp_dir" "$stage_dir"; exit 1
+            fi
+        fi
+        rm -rf "$tmp_dir"
+    fi
+
+    # Staged Installation & Registry Logging
+    if [ -d "$stage_dir" ]; then
+        if [ -d "${stage_dir}${PREFIX}" ]; then
+            cd "${stage_dir}${PREFIX}"
+            find . -type f -o -type l | sed 's|^\./||' | while read -r rel_file; do
+                target_file="${PREFIX}/${rel_file}"
+                mkdir -p "$(dirname "$target_file")"
+                cp -P "./${rel_file}" "$target_file"
+                echo "$target_file" >> "$pkg_db"
+                case "$target_file" in
+                    */bin/*) rkey_check_binary_health "$target_file" ;;
+                esac
+            done
+        else
+            cd "$stage_dir"
+            find . -type f -o -type l | sed 's|^\./||' | while read -r rel_file; do
+                target_file="${PREFIX}/${rel_file}"
+                mkdir -p "$(dirname "$target_file")"
+                cp -P "./${rel_file}" "$target_file"
+                echo "$target_file" >> "$pkg_db"
+                case "$target_file" in
+                    */bin/*) rkey_check_binary_health "$target_file" ;;
+                esac
+            done
+        fi
+    fi
+
+    cd /
+    rm -rf "$stage_dir"
+    echo "==> Successfully compiled and installed '$name' to ${PREFIX}!"
+}
+
+# ==============================================================================
+# Module: Package Update Mechanism (-u)
+# ==============================================================================
+rkey_update() {
+    target_name="$1"
+    found=0
+
+    for db in "${DB_DIR}"/*.files; do
+        [ -f "$db" ] || continue
+        name=$(basename "$db" .files)
+
+        if [ -n "$target_name" ] && [ "$name" != "$target_name" ]; then
+            continue
+        fi
+
+        found=1
+        url_file="${CONFIG_DIR}/${name}.url"
+        recipe_file="${CONFIG_DIR}/${name}.rkey"
+
+        if [ -f "$recipe_file" ]; then
+            echo "==> Updating package '$name' using saved recipe..."
+            while IFS= read -r file; do
+                [ -f "$file" ] || [ -L "$file" ] && rm -f "$file"
+            done < "$db"
+            rm -f "$db" "${CONFIG_DIR}/${name}.files"
+            rkey_compile_install "$recipe_file"
+            continue
+        fi
+
+        if [ ! -f "$url_file" ]; then
+            echo "Warning: No source URL tracked for '$name'. Skipping update."
+            continue
+        fi
+
+        url=$(cat "$url_file")
+        echo "==> Updating package '$name' from $url..."
+
+        while IFS= read -r file; do
+            [ -f "$file" ] || [ -L "$file" ] && rm -f "$file"
+        done < "$db"
+        rm -f "$db"
+
+        tmp_dir=$(mktemp -d)
+        tmp_file="${tmp_dir}/pkg_source"
+        rkey_fetch "$url" "$tmp_file" || { rm -rf "$tmp_dir"; continue; }
+
+        dest_bin="${PREFIX}/bin/${name}"
+        if tar -tzf "$tmp_file" >/dev/null 2>&1; then
+            extract_sub="${tmp_dir}/extracted"
+            mkdir -p "$extract_sub"
+            tar -xzf "$tmp_file" -C "$extract_sub"
+            found_bin=$(find "$extract_sub" -type f -executable | head -n 1)
+            [ -z "$found_bin" ] && found_bin=$(find "$extract_sub" -type f | head -n 1)
+            if [ -n "$found_bin" ]; then
+                cp "$found_bin" "$dest_bin"
+                chmod +x "$dest_bin"
+                echo "$dest_bin" >> "$db"
+                rkey_check_binary_health "$dest_bin"
+            fi
+        else
+            cp "$tmp_file" "$dest_bin"
+            chmod +x "$dest_bin"
+            echo "$dest_bin" >> "$db"
+            rkey_check_binary_health "$dest_bin"
+        fi
+        
+        rm -rf "$tmp_dir"
+        echo "==> Successfully updated '$name'!"
+    done
+
+    if [ -n "$target_name" ] && [ "$found" -eq 0 ]; then
+        echo "Error: Package '$target_name' not found in database." >&2
+        exit 1
+    fi
+}
+
+# ==============================================================================
+# Module: Package Uninstallation / Removal (-R)
+# ==============================================================================
+rkey_remove() {
+    name="$1"
+    [ -z "$name" ] && usage
+    pkg_db="${DB_DIR}/${name}.files"
+    url_file="${CONFIG_DIR}/${name}.url"
+    recipe_file="${CONFIG_DIR}/${name}.rkey"
+
+    [ ! -f "$pkg_db" ] && { echo "Error: Package '$name' is not installed." >&2; exit 1; }
+
+    printf "Remove package '%s' and all associated files? [y/N]: " "$name"
+    read -r reply
+    case "$reply" in [yY]*) ;; *) echo "Removal cancelled."; exit 0 ;; esac
+
+    while IFS= read -r file; do
+        if [ -f "$file" ] || [ -L "$file" ]; then
+            rm -f "$file"
+            echo "Removed: $file"
+        fi
+    done < "$pkg_db"
+
+    rm -f "$pkg_db" "$url_file" "$recipe_file"
+    echo "==> Successfully removed '$name'."
+}
+
+# ==============================================================================
+# Module: Package Listing (-l)
+# ==============================================================================
+rkey_list() {
+    echo "Installed packages (rkey):"
+    for db in "${DB_DIR}"/*.files; do
+        [ -f "$db" ] && basename "$db" .files
+    done
+}
+
+# ==============================================================================
+# Main Command Router
+# ==============================================================================
+[ $# -eq 0 ] && usage
+cmd="$1"
+shift || true
+
+case "$cmd" in
+    fetch)               rkey_fetch "$1" "$2" ;;
+    -i|install)          rkey_install "$1" "$2" ;;
+    -ci|compile-install) rkey_compile_install "$1" "$2" ;;
+    make)                rkey_compile_install "" "" ;;
+    -u|update)           rkey_update "$1" ;;
+    -R|remove)           rkey_remove "$1" ;;
+    -l|list)             rkey_list ;;
+    -v|--version)        echo "rkey v${VERSION}" ;;
+    -h|--help)           usage ;;
+    *)                   usage ;;
+esac
