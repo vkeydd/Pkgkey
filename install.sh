@@ -51,8 +51,7 @@ fetch_file() {
 
 print_banner
 print_menu
-read -r choice
-
+read -r choice </dev/tty
 case "$choice" in
     1)
         echo ""
